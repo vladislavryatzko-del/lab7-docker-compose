@@ -1,0 +1,68 @@
+name: study-messenger
+
+services:
+  # ---------- PostgreSQL: источник истины ----------
+  db:
+    image: postgres:16-alpine
+    container_name: messenger-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?скопируйте .env.example в .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?скопируйте .env.example в .env}
+      POSTGRES_DB: ${POSTGRES_DB:?скопируйте .env.example в .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data                              # данные переживают перезапуск
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro     # схема при первом старте
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]          # порт БД наружу НЕ публикуется: доступна только из сети Compose
+    restart: unless-stopped
+
+  # ---------- Redis: кэш последних сообщений + онлайн-статус ----------
+  redis:
+    image: redis:7-alpine
+    container_name: messenger-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+    restart: unless-stopped
+
+  # ---------- API (собирается из Dockerfile) ----------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: study-messenger-api:1.0
+    container_name: messenger-api
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      LAST_CACHE_SIZE: ${LAST_CACHE_SIZE:-50}
+      ONLINE_TTL_SECONDS: ${ONLINE_TTL_SECONDS:-60}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:                  # стартуем только когда db и redis РЕАЛЬНО готовы (healthy)
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [backend]
+    restart: unless-stopped
+
+networks:
+  backend:
+    name: study-messenger-net
+
+volumes:
+  pgdata:
+    name: study-messenger-pgdata
+  redisdata:
+    name: study-messenger-redisdata
